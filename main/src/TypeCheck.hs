@@ -38,6 +38,7 @@ checkType tm ty = {- SOLN EQUAL -} do
   void $ tcTerm tm (Just nf)
 {- STUBWITH void $ tcTerm tm (Just ty) -}
 
+
 -- | Make sure that the term is a "type" (i.e. that it has type 'Type')
 tcType :: Term -> TcMonad ()
 tcType tm = void $ {- SOLN EP -} Env.withStage Irr $ {- STUBWITH -}checkType tm Type
@@ -129,12 +130,19 @@ tcTerm (LitBool b) Nothing = {- SOLN HW -} do
 
 -- c-if
 tcTerm t@(If t1 t2 t3) mty = {- SOLN HW -} do
-  checkType t1 TyBool
-  dtrue <- def t1 (LitBool True)
-  dfalse <- def t1 (LitBool False)
-  ty <- Env.extendCtxs dtrue $ tcTerm t2 mty
-  Env.extendCtxs dfalse $ checkType t3 ty
-  return ty
+  case mty of 
+    Just ty -> do
+      checkType t1 TyBool
+      dtrue <- def t1 (LitBool True)
+      dfalse <- def t1 (LitBool False)
+      Env.extendCtxs dtrue $ checkType t2 ty
+      Env.extendCtxs dfalse $ checkType t3 ty
+      return ty
+    Nothing -> do
+      checkType t1 TyBool
+      ty <- inferType t2
+      checkType t3 ty
+      return ty
 {- STUBWITH Env.err [DS "unimplemented"] -}
 
 tcTerm (Let rhs bnd) mty = {- SOLN HW -} do
@@ -309,18 +317,17 @@ tcTerm t@(Prod a b) (Just ty) = {- SOLN EQUAL -} do
 {- STUBWITH Env.err [DS "unimplemented"] -}
 
 tcTerm t@(LetPair p bnd) (Just ty) = {- SOLN EQUAL -} do
+  ((x, y), body) <- Unbound.unbind bnd
   pty <- inferType p
   pty' <- Equal.whnf pty
   case pty' of
     Sigma tyA bnd' -> do
-      (x, tyB) <- Unbound.unbind bnd'
-      ((x', y'), body) <- Unbound.unbind bnd
-      let tyB' = Unbound.subst x (Var x') tyB
-      decl <- def p (Prod (Var x') (Var y'))
-      Env.extendCtxs ([mkSig x' tyA, mkSig y' tyB'] ++ decl) $
+      let tyB = Unbound.instantiate bnd' [Var x]
+      decl <- def p (Prod (Var x) (Var y))
+      Env.extendCtxs ([mkSig x tyA, mkSig y tyB] ++ decl) $
           checkType body ty
       return ty
-    _ -> Env.err [DS "Scrutinee of pcase must have Sigma type"]
+    _ -> Env.err [DS "Scrutinee of LetPair must have Sigma type"]
 {- STUBWITH Env.err [DS "unimplemented"] -}
 
 tcTerm PrintMe (Just ty) = do
