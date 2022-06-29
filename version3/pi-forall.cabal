@@ -57,7 +57,7 @@ common shared-properties
     directory,
     filepath,
     HUnit,
-    QuickCheck,
+    QuickCheck
   if !impl(ghc >= 8.0)
     build-depends: semigroups == 0.18.*      
  
@@ -80,15 +80,6 @@ executable pi-forall
   import: shared-properties
   build-depends: pi-forall
   hs-source-dirs: app
-  main-is: Main.hs
-
-executable pi4ls
-  import: shared-properties
-  build-depends: pi-forall,
-                 lsp >= 1.2,
-                 text >= 1.2,
-                 lens >= 4.19.2
-  hs-source-dirs: language_server
   main-is: Main.hs
 
 test-suite test-pi-forall

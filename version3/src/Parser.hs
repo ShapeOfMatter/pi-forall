@@ -8,8 +8,7 @@ module Parser
    parseExpr,
    expr,
    decl,
-   testParser,
-   Term
+   testParser
   )
   where
 
