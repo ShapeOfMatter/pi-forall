@@ -85,9 +85,16 @@ executable pi-forall
 executable pi4ls
   import: shared-properties
   build-depends: pi-forall,
-                 lsp >= 1.2,
+                 lsp >= 1.5,
                  text >= 1.2,
-                 lens >= 4.19.2
+                 lens >= 4.19.2,
+                 stm,
+                 aeson,
+                 unordered-containers,
+                 hslogger,
+                 sorted-list,
+                 co-log-core,
+                 prettyprinter
   hs-source-dirs: language_server
   main-is: Main.hs
 

@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveGeneric         #-}
-{-# LANGUAGE DeriveAnyClass        #-}
+--{-# LANGUAGE DeriveAnyClass        #-}
 {-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
@@ -7,10 +7,6 @@
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE TypeInType            #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-
--- So we can keep using the old prettyprinter modules (which have a better
--- compatibility range) for now.
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 {- |
 This is an example language server built with haskell-lsp using a 'Reactor'
@@ -26,28 +22,23 @@ To try out this server, install it with
 and plug it into your client of choice.
 -}
 module Main (main) where
-
-import           Colog.Core (LogAction (..), WithSeverity (..), Severity (..), (<&))
-import qualified Colog.Core as L
 import           Control.Concurrent.STM.TChan
 import qualified Control.Exception                     as E
 import           Control.Lens hiding (Iso)
 import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.STM
-import qualified Data.Aeson                            as J
-import           Data.Int (Int32)
+-- import qualified Data.Aeson                            as J
+-- import qualified Data.HashMap.Strict                   as H
 import qualified Data.Text                             as T
-import           Data.Text.Prettyprint.Doc
 import           GHC.Generics (Generic)
 import           Language.LSP.Server
-import           System.IO
 import           Language.LSP.Diagnostics
-import           Language.LSP.Logging (defaultClientLogger)
 import qualified Language.LSP.Types            as J
 import qualified Language.LSP.Types.Lens       as J
 import           Language.LSP.VFS
 import           System.Exit
+-- import           System.Log.Logger
 import           Control.Concurrent
 
 
@@ -58,6 +49,10 @@ import           Control.Concurrent
 -- ---------------------------------------------------------------------
 --
 
+serverName :: T.Text
+serverName = "lsp-pi4all"
+
+
 main :: IO ()
 main = do
   run >>= \case
@@ -66,8 +61,8 @@ main = do
 
 -- ---------------------------------------------------------------------
 
-data Config = Config { fooTheBar :: Bool, wibbleFactor :: Int }
-  deriving (Generic, J.ToJSON, J.FromJSON, Show)
+data Config = Config { }
+  deriving (Generic, Show)
 
 run :: IO Int
 run = flip E.catches handlers $ do
@@ -75,44 +70,24 @@ run = flip E.catches handlers $ do
   rin  <- atomically newTChan :: IO (TChan ReactorInput)
 
   let
-    -- Three loggers:
-    -- 1. To stderr
-    -- 2. To the client (filtered by severity)
-    -- 3. To both
-    stderrLogger :: LogAction IO (WithSeverity T.Text)
-    stderrLogger = L.cmap show L.logStringStderr
-    clientLogger :: LogAction (LspM Config) (WithSeverity T.Text)
-    clientLogger = defaultClientLogger
-    dualLogger :: LogAction (LspM Config) (WithSeverity T.Text)
-    dualLogger = clientLogger <> L.hoistLogAction liftIO stderrLogger
-
     serverDefinition = ServerDefinition
-      { defaultConfig = Config {fooTheBar = False, wibbleFactor = 0 }
-      , onConfigurationChange = \_old v -> do
-          case J.fromJSON v of
-            J.Error e -> Left (T.pack e)
-            J.Success cfg -> Right cfg
-      , doInitialize = \env _ -> forkIO (reactor stderrLogger rin) >> pure (Right env)
-      -- Handlers log to both the client and stderr
-      , staticHandlers = lspHandlers dualLogger rin
+      { defaultConfig = Config {}
+      , onConfigurationChange = const $ pure $ Right Config
+      , doInitialize = \env _ -> forkIO (reactor rin) >> pure (Right env)
+      , staticHandlers = lspHandlers rin
       , interpretHandler = \env -> Iso (runLspT env) liftIO
       , options = lspOptions
       }
 
-  let
-    logToText = T.pack . show . pretty
-  runServerWithHandles
-      -- Log to both the client and stderr when we can, stderr beforehand
-    (L.cmap (fmap logToText) stderrLogger)
-    (L.cmap (fmap logToText) dualLogger)
-    stdin
-    stdout
-    serverDefinition
+  flip E.finally finalProc $ do
+    -- setupLogger Nothing ["reactor"] DEBUG
+    runServer serverDefinition
 
   where
     handlers = [ E.Handler ioExcept
                , E.Handler someExcept
                ]
+    finalProc = return () --removeAllHandlers?
     ioExcept   (e :: E.IOException)       = print e >> return 1
     someExcept (e :: E.SomeException)     = print e >> return 1
 
@@ -130,7 +105,7 @@ syncOptions = J.TextDocumentSyncOptions
 lspOptions :: Options
 lspOptions = defaultOptions
   { textDocumentSync = Just syncOptions
-  , executeCommandCommands = Just ["lsp-hello-command"]
+  , executeCommandCommands = Just ["lsp-pi4all-hello-command"]
   }
 
 -- ---------------------------------------------------------------------
@@ -144,36 +119,37 @@ newtype ReactorInput
 
 -- | Analyze the file and send any diagnostics to the client in a
 -- "textDocument/publishDiagnostics" notification
-sendDiagnostics :: J.NormalizedUri -> Maybe Int32 -> LspM Config ()
-sendDiagnostics fileUri version = do
+sendDiagnostics :: Maybe FilePath -> J.NormalizedUri -> Maybe Int -> LspM Config ()
+sendDiagnostics _filePath fileUri version = do
   let
     diags = [J.Diagnostic
-              (J.Range (J.Position 0 1) (J.Position 0 5))
-              (Just J.DsWarning)  -- severity
+              (J.Range (J.Position 2 2) (J.Position 5 5))
+              (Just J.DsError)  -- severity
               Nothing  -- code
-              (Just "parser") -- source
+              (Just "lsp-pi4all-error") -- source
               "Example diagnostic message"
               Nothing -- tags
               (Just (J.List []))
             ]
-  publishDiagnostics 100 fileUri version (partitionBySource diags)
+  sendNotification J.STextDocumentPublishDiagnostics $ J.PublishDiagnosticsParams (J.fromNormalizedUri fileUri) (fmap fromIntegral version) (J.List diags)
+  --publishDiagnostics 100 fileUri version (partitionBySource diags)
 
 -- ---------------------------------------------------------------------
 
 -- | The single point that all events flow through, allowing management of state
 -- to stitch replies and requests together from the two asynchronous sides: lsp
 -- server and backend compiler
-reactor :: L.LogAction IO (WithSeverity T.Text) -> TChan ReactorInput -> IO ()
-reactor logger inp = do
-  logger <& "Started the reactor" `WithSeverity` Info
+reactor :: TChan ReactorInput -> IO ()
+reactor inp = do
+  --debugM "reactor" "Started the reactor"
   forever $ do
     ReactorAction act <- atomically $ readTChan inp
     act
 
 -- | Check if we have a handler, and if we create a haskell-lsp handler to pass it as
 -- input into the reactor
-lspHandlers :: (m ~ LspM Config) => L.LogAction m (WithSeverity T.Text) -> TChan ReactorInput -> Handlers m
-lspHandlers logger rin = mapHandlers goReq goNot (handle logger)
+lspHandlers :: TChan ReactorInput -> Handlers (LspM Config)
+lspHandlers rin = mapHandlers goReq goNot handle
   where
     goReq :: forall (a :: J.Method 'J.FromClient 'J.Request). Handler (LspM Config) a -> Handler (LspM Config) a
     goReq f = \msg k -> do
@@ -186,126 +162,104 @@ lspHandlers logger rin = mapHandlers goReq goNot (handle logger)
       liftIO $ atomically $ writeTChan rin $ ReactorAction (runLspT env $ f msg)
 
 -- | Where the actual logic resides for handling requests and notifications.
-handle :: (m ~ LspM Config) => L.LogAction m (WithSeverity T.Text) -> Handlers m
-handle logger = mconcat
-  [ notificationHandler J.SInitialized $ \_msg -> do
-      logger <& "Processing the Initialized notification" `WithSeverity` Info
-      
-      -- We're initialized! Lets send a showMessageRequest now
-      let params = J.ShowMessageRequestParams
-                         J.MtWarning
-                         "What's your favourite language extension?"
-                         (Just [J.MessageActionItem "Rank2Types", J.MessageActionItem "NPlusKPatterns"])
-
-      void $ sendRequest J.SWindowShowMessageRequest params $ \case
-          Left e -> logger <& ("Got an error: " <> T.pack (show e)) `WithSeverity` Error
-          Right _ -> do
-            sendNotification J.SWindowShowMessage (J.ShowMessageParams J.MtInfo "Excellent choice")
-
-            -- We can dynamically register a capability once the user accepts it
-            sendNotification J.SWindowShowMessage (J.ShowMessageParams J.MtInfo "Turning on code lenses dynamically")
-            
-            let regOpts = J.CodeLensRegistrationOptions Nothing Nothing (Just False)
-            
-            void $ registerCapability J.STextDocumentCodeLens regOpts $ \_req responder -> do
-              logger <& "Processing a textDocument/codeLens request" `WithSeverity` Info
-              let cmd = J.Command "Say hello" "lsp-hello-command" Nothing
-                  rsp = J.List [J.CodeLens (J.mkRange 0 0 0 100) (Just cmd) Nothing]
-              responder (Right rsp)
+handle :: Handlers (LspM Config)
+handle = mconcat
+  [ notificationHandler J.SInitialized $ const $ pure ()
 
   , notificationHandler J.STextDocumentDidOpen $ \msg -> do
     let doc  = msg ^. J.params . J.textDocument . J.uri
         fileName =  J.uriToFilePath doc
-    logger <& ("Processing DidOpenTextDocument for: " <> T.pack (show fileName)) `WithSeverity` Info
-    sendDiagnostics (J.toNormalizedUri doc) (Just 0)
+    --liftIO $ debugM "reactor.handle" $ "Processing DidOpenTextDocument for: " ++ show fileName
+    sendDiagnostics fileName (J.toNormalizedUri doc) (Just 0)
 
   , notificationHandler J.SWorkspaceDidChangeConfiguration $ \msg -> do
       cfg <- getConfig
-      logger L.<& ("Configuration changed: " <> T.pack (show (msg,cfg))) `WithSeverity` Info
+      --liftIO $ debugM "configuration changed: " (show (msg,cfg))
       sendNotification J.SWindowShowMessage $
-        J.ShowMessageParams J.MtInfo $ "Wibble factor set to " <> T.pack (show (wibbleFactor cfg))
+        J.ShowMessageParams J.MtInfo $ "Wibble factor set to " <> T.pack (show cfg)
 
   , notificationHandler J.STextDocumentDidChange $ \msg -> do
     let doc  = msg ^. J.params
                     . J.textDocument
                     . J.uri
-    logger <& ("Processing DidChangeTextDocument for: " <> T.pack (show doc)) `WithSeverity` Info
-    mdoc <- getVirtualFile $ J.toNormalizedUri doc
+                    . to J.toNormalizedUri
+    --liftIO $ debugM "reactor.handle" $ "Processing DidChangeTextDocument for: " ++ show doc
+    mdoc <- getVirtualFile doc
     case mdoc of
-      Just (VirtualFile version str _) -> do
-        logger <& ("Found the virtual file: " <> T.pack (show str)) `WithSeverity` Info
-        sendDiagnostics (J.toNormalizedUri doc) (Just version)
+      Just (VirtualFile _version str _) -> do
+        --liftIO $ debugM "reactor.handle" $ "Found the virtual file: " ++ show str
+        return ()
       Nothing -> do
-        logger <& ("Didn't find anything in the VFS for: " <> T.pack (show doc)) `WithSeverity` Info
+        --liftIO $ debugM "reactor.handle" $ "Didn't find anything in the VFS for: " ++ show doc
+        return ()
 
   , notificationHandler J.STextDocumentDidSave $ \msg -> do
       let doc = msg ^. J.params . J.textDocument . J.uri
           fileName = J.uriToFilePath doc
-      logger <& ("Processing DidSaveTextDocument  for: " <> T.pack (show fileName)) `WithSeverity` Info
-      sendDiagnostics (J.toNormalizedUri doc) Nothing
+      --liftIO $ debugM "reactor.handle" $ "Processing DidSaveTextDocument  for: " ++ show fileName
+      sendDiagnostics fileName (J.toNormalizedUri doc) Nothing
 
   , requestHandler J.STextDocumentRename $ \req responder -> do
-      logger <& "Processing a textDocument/rename request" `WithSeverity` Info
+      --liftIO $ debugM "reactor.handle" "Processing a textDocument/rename request"
       let params = req ^. J.params
           J.Position l c = params ^. J.position
           newName = params ^. J.newName
       vdoc <- getVersionedTextDoc (params ^. J.textDocument)
       -- Replace some text at the position with what the user entered
-      let edit = J.InL $ J.TextEdit (J.mkRange l c l (c + fromIntegral (T.length newName))) newName
+      let edit = J.InL $ J.TextEdit (J.mkRange l c l (c + T.length newName)) newName
           tde = J.TextDocumentEdit vdoc (J.List [edit])
           -- "documentChanges" field is preferred over "changes"
           rsp = J.WorkspaceEdit Nothing (Just (J.List [J.InL tde])) Nothing
       responder (Right rsp)
 
   , requestHandler J.STextDocumentHover $ \req responder -> do
-      logger <& "Processing a textDocument/hover request" `WithSeverity` Info
+      --liftIO $ debugM "reactor.handle" "Processing a textDocument/hover request"
       let J.HoverParams _doc pos _workDone = req ^. J.params
           J.Position _l _c' = pos
           rsp = J.Hover ms (Just range)
-          ms = J.HoverContents $ J.markedUpContent "lsp-hello" "Your type info here!"
+          ms = J.HoverContents $ J.markedUpContent "lsp-pi4all-hello" "Your type info here!2"
           range = J.Range pos pos
       responder (Right $ Just rsp)
 
   , requestHandler J.STextDocumentDocumentSymbol $ \req responder -> do
-      logger <& "Processing a textDocument/documentSymbol request" `WithSeverity` Info
+      --liftIO $ debugM "reactor.handle" "Processing a textDocument/documentSymbol request"
       let J.DocumentSymbolParams _ _ doc = req ^. J.params
           loc = J.Location (doc ^. J.uri) (J.Range (J.Position 0 0) (J.Position 0 0))
-          sym = J.SymbolInformation "lsp-hello" J.SkFunction Nothing Nothing loc Nothing
+          sym = J.SymbolInformation "lsp-pi4all-hello" J.SkFunction Nothing Nothing loc Nothing
           rsp = J.InR (J.List [sym])
       responder (Right rsp)
 
   , requestHandler J.STextDocumentCodeAction $ \req responder -> do
-      logger <& "Processing a textDocument/codeAction request" `WithSeverity` Info
+      --liftIO $ debugM "reactor.handle" $ "Processing a textDocument/codeAction request"
       let params = req ^. J.params
-          doc = params ^. J.textDocument
+          --doc = params ^. J.textDocument
           (J.List diags) = params ^. J.context . J.diagnostics
           -- makeCommand only generates commands for diagnostics whose source is us
-          makeCommand (J.Diagnostic (J.Range s _) _s _c (Just "lsp-hello") _m _t _l) = [J.Command title cmd cmdparams]
+          makeCommand (J.Diagnostic (J.Range start _) _s _c (Just "lsp-pi4all-hello") _m _t _l) = [J.Command title cmd cmdparams]
             where
               title = "Apply LSP hello command:" <> head (T.lines _m)
               -- NOTE: the cmd needs to be registered via the InitializeResponse message. See lspOptions above
-              cmd = "lsp-hello-command"
+              cmd = "lsp-pi4all-hello-command"
               -- need 'file' and 'start_pos'
               args = J.List
-                      [ J.object [("file",     J.object [("textDocument",J.toJSON doc)])]
-                      , J.object [("start_pos",J.object [("position",    J.toJSON s)])]
-                      ]
+                      [{- J.Object $ H.fromList [("file",     J.Object $ H.fromList [("textDocument",J.toJSON doc)])]
+                      , J.Object $ H.fromList [("start_pos",J.Object $ H.fromList [("position",    J.toJSON start)])]
+                      -}]
               cmdparams = Just args
           makeCommand (J.Diagnostic _r _s _c _source _m _t _l) = []
           rsp = J.List $ map J.InL $ concatMap makeCommand diags
       responder (Right rsp)
 
   , requestHandler J.SWorkspaceExecuteCommand $ \req responder -> do
-      logger <& "Processing a workspace/executeCommand request" `WithSeverity` Info
+      --liftIO $ debugM "reactor.handle" "Processing a workspace/executeCommand request"
       let params = req ^. J.params
-          margs = params ^. J.arguments
+          _margs = params ^. J.arguments
 
-      logger <& ("The arguments are: " <> T.pack (show margs)) `WithSeverity` Debug
-      responder (Right (J.Object mempty)) -- respond to the request
+      --liftIO $ debugM "reactor.handle" $ "The arguments are: " ++ show margs
+      --responder (Right (J.Object mempty)) -- respond to the request
 
       void $ withProgress "Executing some long running command" Cancellable $ \update ->
-        forM [(0 :: J.UInt)..10] $ \i -> do
+        forM [(0 :: Double)..10] $ \i -> do
           update (ProgressAmount (Just (i * 10)) (Just "Doing stuff"))
           liftIO $ threadDelay (1 * 1000000)
   ]
-
