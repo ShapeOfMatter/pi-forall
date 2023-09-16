@@ -66,6 +66,10 @@ main = do
 
 -- ---------------------------------------------------------------------
 
+check :: 
+
+-- ---------------------------------------------------------------------
+
 data Config = Config { fooTheBar :: Bool, wibbleFactor :: Int }
   deriving (Generic, J.ToJSON, J.FromJSON, Show)
 
@@ -147,15 +151,17 @@ newtype ReactorInput
 sendDiagnostics :: J.NormalizedUri -> Maybe Int32 -> LspM Config ()
 sendDiagnostics fileUri version = do
   let
+    source = "asadf"
     diags = [J.Diagnostic
               (J.Range (J.Position 0 1) (J.Position 0 5))
               (Just J.DsWarning)  -- severity
               Nothing  -- code
-              (Just "parser") -- source
+              (Just source) -- source
               "Example diagnostic message"
               Nothing -- tags
               (Just (J.List []))
             ]
+  flushDiagnosticsBySource 100 (Just source)
   publishDiagnostics 100 fileUri version (partitionBySource diags)
 
 -- ---------------------------------------------------------------------

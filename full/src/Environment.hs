@@ -76,7 +76,8 @@ data Env = Env
     -- has been checked.
     hints :: [Sig],
     -- | what part of the file we are in (for errors/warnings)
-    sourceLocation :: [SourceLocation] 
+    sourceLocation :: [SourceLocation],
+    fileAccess :: FilePath -> IO String
   }
 
 --deriving Show
@@ -87,6 +88,7 @@ emptyEnv = Env {ctx = preludeDataDecls
                , globals = length preludeDataDecls 
                , hints = []
                , sourceLocation = []
+               , fileAccess = readFile
               }
 
 instance Disp Env where
